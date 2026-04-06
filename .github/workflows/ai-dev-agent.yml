@@ -1,0 +1,283 @@
+name: AI Dev Agent
+
+on:
+  repository_dispatch:
+    types: [jira-ticket-assigned]
+
+# client_payload expected shape:
+# {
+#   "ticket_key": "PROJ-123",
+#   "ticket_id":  "10042"       # Jira internal numeric ID
+# }
+
+jobs:
+  implement-ticket:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      JIRA_HOST: ${{ secrets.JIRA_HOST }}         # e.g. yourorg.atlassian.net
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GH_TOKEN: ${{ secrets.GH_BOT_PAT }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Parse dispatch payload
+      # -----------------------------------------------------------------------
+      - name: Extract ticket info from payload
+        id: ticket
+        run: |
+          TICKET_KEY="${{ github.event.client_payload.ticket_key }}"
+          TICKET_ID="${{ github.event.client_payload.ticket_id }}"
+
+          if [ -z "$TICKET_KEY" ]; then
+            echo "ERROR: ticket_key missing from dispatch payload"
+            exit 1
+          fi
+
+          echo "key=$TICKET_KEY" >> "$GITHUB_OUTPUT"
+          echo "id=$TICKET_ID"   >> "$GITHUB_OUTPUT"
+          echo "Ticket: $TICKET_KEY (id: $TICKET_ID)"
+
+      # -----------------------------------------------------------------------
+      # 2. Fetch ticket from Jira REST API
+      #    Set SKIP_JIRA=true in the dispatch payload to use ticket.json
+      #    committed to this repo instead (useful for local/CI testing).
+      # -----------------------------------------------------------------------
+      - name: Fetch ticket from Jira
+        id: fetch_ticket
+        run: |
+          TICKET_KEY="${{ steps.ticket.outputs.key }}"
+          SKIP_JIRA="${{ github.event.client_payload.skip_jira }}"
+
+          if [ "$SKIP_JIRA" = "true" ]; then
+            echo "SKIP_JIRA=true — using committed ticket.json"
+            if [ ! -f ticket.json ]; then
+              echo "ERROR: skip_jira=true but no ticket.json found in repo root"
+              exit 1
+            fi
+          else
+            RESPONSE=$(curl --silent --fail \
+              --url "https://${JIRA_HOST}/rest/api/3/issue/${TICKET_KEY}" \
+              --user "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              --header "Accept: application/json")
+
+            if [ $? -ne 0 ]; then
+              echo "ERROR: Failed to fetch ticket ${TICKET_KEY} from Jira"
+              exit 1
+            fi
+
+            echo "$RESPONSE" > ticket.json
+          fi
+
+          echo "Ticket summary:"
+          cat ticket.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['fields']['summary'])"
+
+      # -----------------------------------------------------------------------
+      # 3. Extract and validate repo label
+      # -----------------------------------------------------------------------
+      - name: Extract repo from labels
+        id: repo
+        run: |
+          REPO_LABEL=$(cat ticket.json | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          labels = d.get('fields', {}).get('labels', [])
+          repo = next((l.replace('repo:', '') for l in labels if l.startswith('repo:')), '')
+          print(repo)
+          ")
+
+          if [ -z "$REPO_LABEL" ]; then
+            echo "ERROR: No 'repo:<name>' label found on ticket ${{ steps.ticket.outputs.key }}"
+            # Post comment to Jira before failing
+            curl --silent --request POST \
+              --url "https://${JIRA_HOST}/rest/api/3/issue/${{ steps.ticket.outputs.key }}/comment" \
+              --user "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/json" \
+              --data '{
+                "body": {
+                  "type": "doc", "version": 1,
+                  "content": [{"type": "paragraph", "content": [{"type": "text",
+                    "text": "AI Dev Agent failed: ticket is missing a repo:<name> label. Please add one and re-assign to the bot."}]}]
+                }
+              }'
+            exit 1
+          fi
+
+          echo "repo=$REPO_LABEL" >> "$GITHUB_OUTPUT"
+          echo "Target repo: $REPO_LABEL"
+
+      # -----------------------------------------------------------------------
+      # 4. Save ticket.json and agent-prompt.md before switching workspace
+      # -----------------------------------------------------------------------
+      - name: Save agent files to runner temp
+        run: |
+          cp ticket.json "$RUNNER_TEMP/ticket.json"
+          cp agent-prompt.md "$RUNNER_TEMP/agent-prompt.md"
+
+      # -----------------------------------------------------------------------
+      # 5. Checkout target repository (replaces workspace)
+      # -----------------------------------------------------------------------
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/${{ steps.repo.outputs.repo }}
+          token: ${{ secrets.GH_BOT_PAT }}
+          fetch-depth: 0
+
+      # Restore ticket.json and agent-prompt.md into the target repo workspace
+      - name: Restore agent files into target repo
+        run: |
+          cp "$RUNNER_TEMP/ticket.json"      ticket.json
+          cp "$RUNNER_TEMP/agent-prompt.md"  agent-prompt.md
+
+      # -----------------------------------------------------------------------
+      # 5. Set up Node.js and install Claude Code
+      # -----------------------------------------------------------------------
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      # -----------------------------------------------------------------------
+      # 6. Configure git identity for the bot
+      # -----------------------------------------------------------------------
+      - name: Configure git
+        run: |
+          git config user.email "ai-dev-bot@yourorg.com"
+          git config user.name "AI Dev Bot"
+
+      # -----------------------------------------------------------------------
+      # 7. Run Claude Code agent
+      # -----------------------------------------------------------------------
+      - name: Run Claude Code
+        id: claude
+        run: |
+          claude \
+            --system-prompt "$(cat agent-prompt.md)" \
+            --max-turns 30 \
+            --dangerously-skip-permissions \
+            "Implement the Jira ticket described in ticket.json. Follow the workflow in the system prompt exactly."
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      # -----------------------------------------------------------------------
+      # 8. Detect branch created by Claude and open PR
+      # -----------------------------------------------------------------------
+      - name: Open pull request
+        id: pr
+        run: |
+          TICKET_KEY="${{ steps.ticket.outputs.key }}"
+
+          # Find the feature branch Claude created
+          BRANCH=$(git branch --list "feature/${TICKET_KEY}-*" | head -1 | tr -d ' ')
+
+          if [ -z "$BRANCH" ]; then
+            echo "ERROR: No feature branch found for ${TICKET_KEY}"
+            exit 1
+          fi
+
+          echo "Creating PR from branch: $BRANCH"
+
+          SUMMARY=$(cat ticket.json | python3 -c "import sys,json; print(json.load(sys.stdin)['fields']['summary'])")
+
+          PR_URL=$(gh pr create \
+            --title "${TICKET_KEY}: ${SUMMARY}" \
+            --body "Automated implementation of [${TICKET_KEY}](https://${JIRA_HOST}/browse/${TICKET_KEY})
+
+**Summary:** ${SUMMARY}
+
+> This PR was opened automatically by the AI Dev Agent. Please review carefully before merging." \
+            --base main \
+            --head "$BRANCH")
+
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "PR created: $PR_URL"
+
+      # -----------------------------------------------------------------------
+      # 9. Transition Jira ticket to Code Review
+      # -----------------------------------------------------------------------
+      - name: Transition Jira ticket to Code Review
+        run: |
+          TICKET_KEY="${{ steps.ticket.outputs.key }}"
+
+          # Fetch available transitions
+          TRANSITIONS=$(curl --silent \
+            --url "https://${JIRA_HOST}/rest/api/3/issue/${TICKET_KEY}/transitions" \
+            --user "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            --header "Accept: application/json")
+
+          # Extract the transition ID for "Code Review" (adjust name to match your workflow)
+          TRANSITION_ID=$(echo "$TRANSITIONS" | python3 -c "
+          import sys, json
+          t = json.load(sys.stdin).get('transitions', [])
+          match = next((x['id'] for x in t if 'review' in x['name'].lower()), None)
+          print(match or '')
+          ")
+
+          if [ -z "$TRANSITION_ID" ]; then
+            echo "WARNING: Could not find a 'Code Review' transition. Skipping status update."
+            exit 0
+          fi
+
+          curl --silent --request POST \
+            --url "https://${JIRA_HOST}/rest/api/3/issue/${TICKET_KEY}/transitions" \
+            --user "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            --header "Accept: application/json" \
+            --header "Content-Type: application/json" \
+            --data "{\"transition\": {\"id\": \"${TRANSITION_ID}\"}}"
+
+          echo "Ticket transitioned to Code Review"
+
+      # -----------------------------------------------------------------------
+      # 10. Post PR link as comment on Jira ticket
+      # -----------------------------------------------------------------------
+      - name: Comment PR link on Jira
+        run: |
+          TICKET_KEY="${{ steps.ticket.outputs.key }}"
+          PR_URL="${{ steps.pr.outputs.pr_url }}"
+
+          curl --silent --request POST \
+            --url "https://${JIRA_HOST}/rest/api/3/issue/${TICKET_KEY}/comment" \
+            --user "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            --header "Accept: application/json" \
+            --header "Content-Type: application/json" \
+            --data "{
+              \"body\": {
+                \"type\": \"doc\", \"version\": 1,
+                \"content\": [{\"type\": \"paragraph\", \"content\": [{\"type\": \"text\",
+                  \"text\": \"AI Dev Agent opened a pull request: ${PR_URL}\"}]}]
+              }
+            }"
+
+          echo "Jira comment posted"
+
+      # -----------------------------------------------------------------------
+      # Error handler — post failure comment to Jira
+      # -----------------------------------------------------------------------
+      - name: Notify Jira on failure
+        if: failure()
+        run: |
+          TICKET_KEY="${{ steps.ticket.outputs.key }}"
+
+          # Skip if we don't even have a ticket key yet
+          if [ -z "$TICKET_KEY" ]; then exit 0; fi
+
+          curl --silent --request POST \
+            --url "https://${JIRA_HOST}/rest/api/3/issue/${TICKET_KEY}/comment" \
+            --user "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            --header "Accept: application/json" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "body": {
+                "type": "doc", "version": 1,
+                "content": [{"type": "paragraph", "content": [{"type": "text",
+                  "text": "AI Dev Agent workflow failed. Check the GitHub Actions run for details. The ticket has been unassigned from the bot — please review and re-assign when ready."}]}]
+              }
+            }'
