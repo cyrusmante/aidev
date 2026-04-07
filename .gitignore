@@ -1,2 +1,5 @@
 .env
 ticket.json
+fetch-tickets.sh
+test-local.sh
+create-test-repo.sh
