@@ -24,6 +24,12 @@ jobs:
 
     steps:
       # -----------------------------------------------------------------------
+      # 0. Checkout aidev repo (to get agent-prompt.md and ticket.json if skip_jira)
+      # -----------------------------------------------------------------------
+      - name: Checkout aidev repo
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
       # 1. Parse dispatch payload
       # -----------------------------------------------------------------------
       - name: Extract ticket info from payload
