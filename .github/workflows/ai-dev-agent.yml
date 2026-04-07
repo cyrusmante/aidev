@@ -130,7 +130,7 @@ jobs:
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/${{ steps.repo.outputs.repo }}
+          repository: ${{ github.repository_owner }}/test-repo
           token: ${{ secrets.GH_BOT_PAT }}
           fetch-depth: 0
 
