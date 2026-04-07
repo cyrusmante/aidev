@@ -18,7 +18,7 @@ KEYS=$(curl --silent \
   | python3 -c "import sys,json; [print(i['key']) for i in json.load(sys.stdin).get('issues',[])]")
 
 if [ -z "$KEYS" ]; then
-  echo "No tickets recently assigned to you."
+  echo "No tickets recently assigned to you." 
   exit 0
 fi
 
