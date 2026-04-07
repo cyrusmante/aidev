@@ -87,31 +87,28 @@ jobs:
       - name: Extract repo from labels
         id: repo
         run: |
-          REPO_LABEL=$(cat ticket.json | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          labels = d.get('fields', {}).get('labels', [])
-          repo = next((l.replace('repo:', '') for l in labels if l.startswith('repo:')), '')
-          print(repo)
-          ")
+          # HARDCODED FOR TESTING
+          REPO_LABEL="test-repo"
 
-          if [ -z "$REPO_LABEL" ]; then
-            echo "ERROR: No 'repo:<name>' label found on ticket ${{ steps.ticket.outputs.key }}"
-            # Post comment to Jira before failing
-            curl --silent --request POST \
-              --url "https://${JIRA_HOST}/rest/api/3/issue/${{ steps.ticket.outputs.key }}/comment" \
-              --user "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-              --header "Accept: application/json" \
-              --header "Content-Type: application/json" \
-              --data '{
-                "body": {
-                  "type": "doc", "version": 1,
-                  "content": [{"type": "paragraph", "content": [{"type": "text",
-                    "text": "AI Dev Agent failed: ticket is missing a repo:<name> label. Please add one and re-assign to the bot."}]}]
-                }
-              }'
-            exit 1
-          fi
+          # --- PRODUCTION: uncomment below and remove hardcoded line above ---
+          # REPO_LABEL=$(cat ticket.json | python3 -c "
+          # import sys, json
+          # d = json.load(sys.stdin)
+          # labels = d.get('fields', {}).get('labels', [])
+          # repo = next((l.replace('repo:', '') for l in labels if l.startswith('repo:')), '')
+          # print(repo)
+          # ")
+          #
+          # if [ -z "$REPO_LABEL" ]; then
+          #   echo "ERROR: No 'repo:<name>' label found on ticket ${{ steps.ticket.outputs.key }}"
+          #   curl --silent --request POST \
+          #     --url "https://${JIRA_HOST}/rest/api/3/issue/${{ steps.ticket.outputs.key }}/comment" \
+          #     --user "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+          #     --header "Accept: application/json" \
+          #     --header "Content-Type: application/json" \
+          #     --data '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"AI Dev Agent failed: ticket is missing a repo:<name> label. Please add one and re-assign to the bot."}]}]}}'
+          #   exit 1
+          # fi
 
           echo "repo=$REPO_LABEL" >> "$GITHUB_OUTPUT"
           echo "Target repo: $REPO_LABEL"
