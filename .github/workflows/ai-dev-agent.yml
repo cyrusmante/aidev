@@ -187,13 +187,11 @@ jobs:
 
           SUMMARY=$(cat ticket.json | python3 -c "import sys,json; print(json.load(sys.stdin)['fields']['summary'])")
 
+          PR_BODY="Automated implementation of [${TICKET_KEY}](https://${JIRA_HOST}/browse/${TICKET_KEY})\n\n**Summary:** ${SUMMARY}\n\n> This PR was opened automatically by the AI Dev Agent. Please review carefully before merging."
+
           PR_URL=$(gh pr create \
             --title "${TICKET_KEY}: ${SUMMARY}" \
-            --body "Automated implementation of [${TICKET_KEY}](https://${JIRA_HOST}/browse/${TICKET_KEY})
-
-**Summary:** ${SUMMARY}
-
-> This PR was opened automatically by the AI Dev Agent. Please review carefully before merging." \
+            --body "$PR_BODY" \
             --base main \
             --head "$BRANCH")
 
