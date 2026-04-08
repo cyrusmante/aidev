@@ -80,7 +80,7 @@ jobs:
 
           echo "=== Ticket Debug Info ==="
           python3 -c "import json; d=json.load(open('ticket.json')); f=d.get('fields',{}); print('Key:     ', d.get('key')); print('Summary: ', f.get('summary')); print('Status:  ', f.get('status',{}).get('name')); print('Priority:', f.get('priority',{}).get('name')); print('Labels:  ', f.get('labels'))"
-          python3 -c "import json; d=json.load(open('ticket.json')); desc=d.get('fields',{}).get('description'); print('Description: (empty)') if not desc else None"
+          python3 -c "import json; d=json.load(open('ticket.json')); desc=d.get('fields',{}).get('description'); print('Description (raw):', str(desc)[:1000])"
 
       # -----------------------------------------------------------------------
       # 3. Extract and validate repo label
