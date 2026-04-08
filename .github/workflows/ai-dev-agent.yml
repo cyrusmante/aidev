@@ -79,17 +79,17 @@ jobs:
           fi
 
           echo "=== Ticket Debug Info ==="
-          cat ticket.json | python3 -c "
+          python3 << 'PYEOF'
 import sys, json
-d = json.load(sys.stdin)
-f = d.get('fields', {})
+with open('ticket.json') as f:
+    d = json.load(f)
+fields = d.get('fields', {})
 print('Key:     ', d.get('key'))
-print('Summary: ', f.get('summary'))
-print('Status:  ', f.get('status', {}).get('name'))
-print('Priority:', f.get('priority', {}).get('name'))
-print('Labels:  ', f.get('labels'))
-
-desc = f.get('description')
+print('Summary: ', fields.get('summary'))
+print('Status:  ', fields.get('status', {}).get('name'))
+print('Priority:', fields.get('priority', {}).get('name'))
+print('Labels:  ', fields.get('labels'))
+desc = fields.get('description')
 if desc:
     texts = []
     def extract(node):
@@ -105,7 +105,7 @@ if desc:
     print('Description:', ' '.join(texts)[:500])
 else:
     print('Description: (empty)')
-"
+PYEOF
 
       # -----------------------------------------------------------------------
       # 3. Extract and validate repo label
