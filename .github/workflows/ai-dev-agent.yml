@@ -153,8 +153,8 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Configure git
         run: |
-          git config user.email "ai-dev-bot@yourorg.com"
-          git config user.name "AI Dev Bot"
+          git config user.email "cyrus.mante@cambridge.org"
+          git config user.name "Cyrus Mante"
 
       # -----------------------------------------------------------------------
       # 7. Run Claude Code agent
