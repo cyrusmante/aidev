@@ -79,33 +79,8 @@ jobs:
           fi
 
           echo "=== Ticket Debug Info ==="
-          python3 << 'PYEOF'
-import sys, json
-with open('ticket.json') as f:
-    d = json.load(f)
-fields = d.get('fields', {})
-print('Key:     ', d.get('key'))
-print('Summary: ', fields.get('summary'))
-print('Status:  ', fields.get('status', {}).get('name'))
-print('Priority:', fields.get('priority', {}).get('name'))
-print('Labels:  ', fields.get('labels'))
-desc = fields.get('description')
-if desc:
-    texts = []
-    def extract(node):
-        if isinstance(node, dict):
-            if node.get('type') == 'text':
-                texts.append(node.get('text', ''))
-            for v in node.values():
-                extract(v)
-        elif isinstance(node, list):
-            for i in node:
-                extract(i)
-    extract(desc)
-    print('Description:', ' '.join(texts)[:500])
-else:
-    print('Description: (empty)')
-PYEOF
+          python3 -c "import json; d=json.load(open('ticket.json')); f=d.get('fields',{}); print('Key:     ', d.get('key')); print('Summary: ', f.get('summary')); print('Status:  ', f.get('status',{}).get('name')); print('Priority:', f.get('priority',{}).get('name')); print('Labels:  ', f.get('labels'))"
+          python3 -c "import json; d=json.load(open('ticket.json')); desc=d.get('fields',{}).get('description'); print('Description: (empty)') if not desc else None"
 
       # -----------------------------------------------------------------------
       # 3. Extract and validate repo label
