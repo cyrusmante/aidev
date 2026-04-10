@@ -172,39 +172,21 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
       # -----------------------------------------------------------------------
-      # 8. Detect branch created by Claude and open PR
+      # 8. Get PR URL opened by Claude
       # -----------------------------------------------------------------------
-      - name: Open pull request
+      - name: Get PR URL
         id: pr
         run: |
           TICKET_KEY="${{ steps.ticket.outputs.key }}"
-
-          # Find the feature branch Claude created
           git fetch --all
-          echo "All branches:"
-          git branch -a
           BRANCH=$(git branch -a --list "*feature/${TICKET_KEY}-*" | head -1 | tr -d ' *' | sed 's|remotes/origin/||')
-
           if [ -z "$BRANCH" ]; then
-            echo "ERROR: No feature branch found for ${TICKET_KEY}"
-            exit 1
+            echo "pr_url=" >> "$GITHUB_OUTPUT"
+          else
+            PR_URL=$(gh pr view "$BRANCH" --json url -q .url 2>/dev/null || echo "")
+            echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+            echo "PR URL: $PR_URL"
           fi
-
-          echo "Creating PR from branch: $BRANCH"
-          git log main.."$BRANCH" --oneline || echo "WARNING: no commits ahead of main on $BRANCH"
-
-          SUMMARY=$(cat ticket.json | python3 -c "import sys,json; print(json.load(sys.stdin)['fields']['summary'])")
-
-          PR_BODY="Automated implementation of [${TICKET_KEY}](https://${JIRA_HOST}/browse/${TICKET_KEY})\n\n**Summary:** ${SUMMARY}\n\n> This PR was opened automatically by the AI Dev Agent. Please review carefully before merging."
-
-          PR_URL=$(gh pr create \
-            --title "${TICKET_KEY}: ${SUMMARY}" \
-            --body "$PR_BODY" \
-            --base main \
-            --head "$BRANCH" 2>/dev/null) || PR_URL=$(gh pr view "$BRANCH" --json url -q .url)
-
-          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
-          echo "PR URL: $PR_URL"
 
       # -----------------------------------------------------------------------
       # 9. Transition Jira ticket to Code Review
