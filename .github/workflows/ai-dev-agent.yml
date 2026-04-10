@@ -180,7 +180,10 @@ jobs:
           TICKET_KEY="${{ steps.ticket.outputs.key }}"
 
           # Find the feature branch Claude created
-          BRANCH=$(git branch --list "feature/${TICKET_KEY}-*" | head -1 | tr -d ' *')
+          git fetch --all
+          echo "All branches:"
+          git branch -a
+          BRANCH=$(git branch -a --list "*feature/${TICKET_KEY}-*" | head -1 | tr -d ' *' | sed 's|remotes/origin/||')
 
           if [ -z "$BRANCH" ]; then
             echo "ERROR: No feature branch found for ${TICKET_KEY}"
