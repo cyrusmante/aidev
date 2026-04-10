@@ -158,7 +158,48 @@ jobs:
           git config user.name "Cyrus Mante"
 
       # -----------------------------------------------------------------------
-      # 7. Run Claude Code agent
+      # 7. Write mcp.json — GitHub MCP server for Claude
+      # -----------------------------------------------------------------------
+      - name: Write mcp.json
+        run: |
+          cat > mcp.json <<'EOF'
+          {
+            "mcpServers": {
+              "github": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-github"],
+                "env": {
+                  "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+                }
+              }
+            }
+          }
+          EOF
+        env:
+          GITHUB_PERSONAL_ACCESS_TOKEN: ${{ secrets.GH_BOT_PAT }}
+
+      # -----------------------------------------------------------------------
+      # 8. Write Claude settings.json — injects Jira env vars
+      # -----------------------------------------------------------------------
+      - name: Write Claude settings.json
+        run: |
+          mkdir -p ~/.claude
+          cat > ~/.claude/settings.json <<EOF
+          {
+            "env": {
+              "JIRA_HOST": "${JIRA_HOST}",
+              "JIRA_EMAIL": "${JIRA_EMAIL}",
+              "JIRA_API_TOKEN": "${JIRA_API_TOKEN}"
+            }
+          }
+          EOF
+        env:
+          JIRA_HOST: ${{ secrets.JIRA_HOST }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # 9. Run Claude Code agent
       # -----------------------------------------------------------------------
       - name: Run Claude Code
         id: claude
