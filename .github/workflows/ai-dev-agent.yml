@@ -201,10 +201,10 @@ jobs:
             --title "${TICKET_KEY}: ${SUMMARY}" \
             --body "$PR_BODY" \
             --base main \
-            --head "$BRANCH")
+            --head "$BRANCH" 2>/dev/null) || PR_URL=$(gh pr view "$BRANCH" --json url -q .url)
 
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
-          echo "PR created: $PR_URL"
+          echo "PR URL: $PR_URL"
 
       # -----------------------------------------------------------------------
       # 9. Transition Jira ticket to Code Review
