@@ -180,7 +180,7 @@ jobs:
           TICKET_KEY="${{ steps.ticket.outputs.key }}"
 
           # Find the feature branch Claude created
-          BRANCH=$(git branch --list "feature/${TICKET_KEY}-*" | head -1 | tr -d ' ')
+          BRANCH=$(git branch --list "feature/${TICKET_KEY}-*" | head -1 | tr -d ' *')
 
           if [ -z "$BRANCH" ]; then
             echo "ERROR: No feature branch found for ${TICKET_KEY}"
@@ -188,6 +188,7 @@ jobs:
           fi
 
           echo "Creating PR from branch: $BRANCH"
+          git log main.."$BRANCH" --oneline || echo "WARNING: no commits ahead of main on $BRANCH"
 
           SUMMARY=$(cat ticket.json | python3 -c "import sys,json; print(json.load(sys.stdin)['fields']['summary'])")
 
