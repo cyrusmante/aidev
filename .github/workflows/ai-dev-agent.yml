@@ -3,20 +3,29 @@ name: AI Dev Agent
 on:
   repository_dispatch:
     types: [jira-ticket-assigned]
-
-# client_payload expected shape:
-# {
-#   "ticket_key": "PROJ-123",
-#   "ticket_id":  "10042"       # Jira internal numeric ID
-# }
+  workflow_dispatch:
+    inputs:
+      ticket_key:
+        required: true
+        type: string
+      ticket_id:
+        required: false
+        type: string
+      skip_jira:
+        required: false
+        type: boolean
+        default: false
+      project:
+        required: false
+        type: string
 
 jobs:
   implement-ticket:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     env:
-      JIRA_HOST: ${{ secrets.JIRA_HOST }}         # e.g. yourorg.atlassian.net
+      JIRA_HOST: ${{ secrets.JIRA_HOST }}
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -35,28 +44,28 @@ jobs:
       - name: Extract ticket info from payload
         id: ticket
         run: |
-          TICKET_KEY="${{ github.event.client_payload.ticket_key }}"
-          TICKET_ID="${{ github.event.client_payload.ticket_id }}"
+          TICKET_KEY="${{ github.event.inputs.ticket_key || github.event.client_payload.ticket_key }}"
+          TICKET_ID="${{ github.event.inputs.ticket_id || github.event.client_payload.ticket_id }}"
+          PROJECT="${{ github.event.inputs.project || github.event.client_payload.project }}"
 
           if [ -z "$TICKET_KEY" ]; then
             echo "ERROR: ticket_key missing from dispatch payload"
             exit 1
           fi
 
-          echo "key=$TICKET_KEY" >> "$GITHUB_OUTPUT"
-          echo "id=$TICKET_ID"   >> "$GITHUB_OUTPUT"
-          echo "Ticket: $TICKET_KEY (id: $TICKET_ID)"
+          echo "key=$TICKET_KEY"     >> "$GITHUB_OUTPUT"
+          echo "id=$TICKET_ID"       >> "$GITHUB_OUTPUT"
+          echo "project=$PROJECT"    >> "$GITHUB_OUTPUT"
+          echo "Ticket: $TICKET_KEY (id: $TICKET_ID) project: $PROJECT"
 
       # -----------------------------------------------------------------------
       # 2. Fetch ticket from Jira REST API
-      #    Set SKIP_JIRA=true in the dispatch payload to use ticket.json
-      #    committed to this repo instead (useful for local/CI testing).
       # -----------------------------------------------------------------------
       - name: Fetch ticket from Jira
         id: fetch_ticket
         run: |
           TICKET_KEY="${{ steps.ticket.outputs.key }}"
-          SKIP_JIRA="${{ github.event.client_payload.skip_jira }}"
+          SKIP_JIRA="${{ github.event.inputs.skip_jira || github.event.client_payload.skip_jira }}"
 
           if [ "$SKIP_JIRA" = "true" ]; then
             echo "SKIP_JIRA=true — using committed ticket.json"
@@ -105,6 +114,35 @@ jobs:
           echo "Target repo: $REPO_LABEL"
 
       # -----------------------------------------------------------------------
+      # 3b. Resolve org and PAT from project key
+      # -----------------------------------------------------------------------
+      - name: Resolve org and PAT from project
+        id: orgpat
+        run: |
+          PROJECT="${{ steps.ticket.outputs.project }}"
+
+          case "$PROJECT" in
+            GENAI)
+              ORG="cambridge-ai"
+              TOKEN="${{ secrets.GH_BOT_PAT_CAMBRIDGE_AI }}"
+              ;;
+            # Add new orgs below as teams onboard:
+            # ENGTECH)
+            #   ORG="english-tech"
+            #   TOKEN="${{ secrets.GH_BOT_PAT_ENGLISH_TECH }}"
+            #   ;;
+            *)
+              echo "WARNING: No project mapping for '$PROJECT' — falling back to cambridge-ai"
+              ORG="cambridge-ai"
+              TOKEN="${{ secrets.GH_BOT_PAT_CAMBRIDGE_AI }}"
+              ;;
+          esac
+
+          echo "org=$ORG"     >> "$GITHUB_OUTPUT"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          echo "Resolved: $PROJECT → $ORG"
+
+      # -----------------------------------------------------------------------
       # 4. Save ticket.json and agent-prompt.md before switching workspace
       # -----------------------------------------------------------------------
       - name: Save agent files to runner temp
@@ -118,8 +156,8 @@ jobs:
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
-          repository: cambridge-ai/${{ steps.repo.outputs.repo }}
-          token: ${{ secrets.GH_BOT_PAT }}
+          repository: ${{ steps.orgpat.outputs.org }}/${{ steps.repo.outputs.repo }}
+          token: ${{ steps.orgpat.outputs.token }}
           fetch-depth: 0
 
       # Restore ticket.json and agent-prompt.md into the target repo workspace
@@ -129,7 +167,7 @@ jobs:
           cp "$RUNNER_TEMP/agent-prompt.md"  agent-prompt.md
 
       # -----------------------------------------------------------------------
-      # 5. Set up Node.js and install Claude Code
+      # 6. Set up Node.js and install Claude Code
       # -----------------------------------------------------------------------
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -140,7 +178,7 @@ jobs:
         run: npm install -g @anthropic-ai/claude-code
 
       # -----------------------------------------------------------------------
-      # 6. Configure git identity for the bot
+      # 7. Configure git identity for the bot
       # -----------------------------------------------------------------------
       - name: Configure git
         run: |
@@ -148,21 +186,21 @@ jobs:
           git config user.name "Cyrus Mante"
 
       # -----------------------------------------------------------------------
-      # 7. Run Claude Code agent
+      # 8. Run Claude Code agent
       # -----------------------------------------------------------------------
       - name: Run Claude Code
         id: claude
         run: |
           claude \
             --system-prompt "$(cat agent-prompt.md)" \
-            --max-turns 30 \
+            --max-turns 60 \
             --dangerously-skip-permissions \
             "Implement the Jira ticket described in ticket.json. Follow the workflow in the system prompt exactly."
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
       # -----------------------------------------------------------------------
-      # 8. Get PR URL opened by Claude
+      # 9. Get PR URL opened by Claude
       # -----------------------------------------------------------------------
       - name: Get PR URL
         id: pr
@@ -179,19 +217,19 @@ jobs:
           fi
 
       # -----------------------------------------------------------------------
-      # 9. Transition Jira ticket to Code Review
+      # 10. Transition Jira ticket to Code Review
+      #     Skipped if Claude wrote a skip-transition file (blocked or checks failed)
       # -----------------------------------------------------------------------
       - name: Transition Jira ticket to Code Review
+        if: steps.claude.outcome == 'success' && !hashFiles('skip-transition')
         run: |
           TICKET_KEY="${{ steps.ticket.outputs.key }}"
 
-          # Fetch available transitions
           TRANSITIONS=$(curl --silent \
             --url "https://${JIRA_HOST}/rest/api/3/issue/${TICKET_KEY}/transitions" \
             --user "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             --header "Accept: application/json")
 
-          # Extract the transition ID for "Code Review" (adjust name to match your workflow)
           TRANSITION_ID=$(echo "$TRANSITIONS" | python3 -c "
           import sys, json
           t = json.load(sys.stdin).get('transitions', [])
@@ -214,25 +252,32 @@ jobs:
           echo "Ticket transitioned to Code Review"
 
       # -----------------------------------------------------------------------
-      # 10. Post PR link as comment on Jira ticket
+      # 11. Post Jira comment from file written by Claude
+      #     Skipped if Claude did not produce a jira-comment.json
       # -----------------------------------------------------------------------
-      - name: Comment PR link on Jira
+      - name: Comment on Jira
+        if: steps.claude.outcome == 'success'
         run: |
           TICKET_KEY="${{ steps.ticket.outputs.key }}"
-          PR_URL="${{ steps.pr.outputs.pr_url }}"
+
+          if [ ! -f jira-comment.json ]; then
+            echo "WARNING: jira-comment.json not found — skipping Jira comment"
+            exit 0
+          fi
+
+          if ! python3 -m json.tool jira-comment.json > /dev/null 2>&1; then
+            echo "ERROR: jira-comment.json is not valid JSON — skipping Jira comment"
+            exit 0
+          fi
+
+          COMMENT_BODY=$(cat jira-comment.json)
 
           curl --silent --request POST \
             --url "https://${JIRA_HOST}/rest/api/3/issue/${TICKET_KEY}/comment" \
             --user "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             --header "Accept: application/json" \
             --header "Content-Type: application/json" \
-            --data "{
-              \"body\": {
-                \"type\": \"doc\", \"version\": 1,
-                \"content\": [{\"type\": \"paragraph\", \"content\": [{\"type\": \"text\",
-                  \"text\": \"AI Dev Agent opened a pull request: ${PR_URL}\"}]}]
-              }
-            }"
+            --data "$COMMENT_BODY"
 
           echo "Jira comment posted"
 
@@ -244,7 +289,6 @@ jobs:
         run: |
           TICKET_KEY="${{ steps.ticket.outputs.key }}"
 
-          # Skip if we don't even have a ticket key yet
           if [ -z "$TICKET_KEY" ]; then exit 0; fi
 
           curl --silent --request POST \
